@@ -1,7 +1,7 @@
 """
 English Literature Revision Quiz App
 Flask application for Class 10 NCERT English Literature MCQ revision
-Uses Gemini 2.0 Flash for AI-generated questions
+Uses Gemini API for AI-generated questions
 """
 
 from flask import Flask, render_template_string, request, jsonify, session
@@ -10,15 +10,6 @@ import json
 import os
 import re
 import secrets
-
-# Try to import PyMuPDF for PDF reading
-try:
-    import fitz  # PyMuPDF
-    PDF_SUPPORT = True
-except ImportError:
-    PDF_SUPPORT = False
-    print("WARNING: PyMuPDF not installed. Install with: pip install pymupdf")
-    print("PDF content extraction will be disabled.")
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
@@ -29,222 +20,29 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 # Base directory for content
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BOOKS_DIR = os.path.join(BASE_DIR, "Main Content Books")
-PYQ_DIRS = [
-    os.path.join(BASE_DIR, "PYQ BUNDLE 1"),
-    os.path.join(BASE_DIR, "PYQ BUNDLE 2"),
-    os.path.join(BASE_DIR, "PYQ BUNDLE 3"),
-    os.path.join(BASE_DIR, "PYQ BUNDLE 4"),
-]
 
-# PDF file paths
-FIRST_FLIGHT_PDF = os.path.join(BOOKS_DIR, "English NCERT First Flight.pdf")
-FOOTPRINTS_PDF = os.path.join(BOOKS_DIR, "English NCERT Footprint without feets.pdf")
+# Pre-extracted content JSON file (created by extract_content.py)
+EXTRACTED_CONTENT_FILE = os.path.join(BASE_DIR, "extracted_content", "chapters_content.json")
 
-# Chapter page ranges in First Flight PDF (approximate - will search for chapter headers)
-FIRST_FLIGHT_PAGE_HINTS = {
-    "A Letter to God": {"start_page": 1, "keywords": ["letter to god", "lencho"]},
-    "Nelson Mandela: Long Walk to Freedom": {"start_page": 16, "keywords": ["nelson mandela", "long walk", "freedom", "apartheid"]},
-    "Two Stories about Flying": {"start_page": 30, "keywords": ["flying", "black aeroplane", "seagull"]},
-    "From the Diary of Anne Frank": {"start_page": 46, "keywords": ["anne frank", "diary", "mr keesing"]},
-    "Glimpses of India": {"start_page": 72, "keywords": ["glimpses of india", "coorg", "tea", "baker"]},
-    "Mijbil the Otter": {"start_page": 100, "keywords": ["mijbil", "otter", "maxwell"]},
-    "Madam Rides the Bus": {"start_page": 116, "keywords": ["madam rides", "valli", "bus"]},
-    "The Sermon at Benares": {"start_page": 128, "keywords": ["sermon", "benares", "buddha", "kisa gotami"]},
-    "The Proposal": {"start_page": 138, "keywords": ["proposal", "lomov", "chubukov", "natalya"]},
-    "Dust of Snow & Fire and Ice": {"start_page": 14, "keywords": ["dust of snow", "fire and ice", "frost", "crow", "hemlock"]},
-    "A Tiger in the Zoo": {"start_page": 29, "keywords": ["tiger in the zoo", "stalks", "cage"]},
-    "How to Tell Wild Animals & The Ball Poem": {"start_page": 43, "keywords": ["wild animals", "ball poem", "asian lion", "bengal tiger"]},
-    "Amanda!": {"start_page": 61, "keywords": ["amanda", "silence", "moody"]},
-    "Animals & The Trees": {"start_page": 83, "keywords": ["animals", "trees", "whitman", "adrienne rich"]},
-    "Fog & The Tale of Custard the Dragon": {"start_page": 113, "keywords": ["fog", "custard", "dragon", "belinda"]},
-    "For Anne Gregory": {"start_page": 137, "keywords": ["anne gregory", "yellow hair", "yeats"]},
-}
-
-# Chapter hints for Footprints Without Feet
-FOOTPRINTS_PAGE_HINTS = {
-    "A Triumph of Surgery": {"start_page": 1, "keywords": ["triumph of surgery", "tricki", "mrs pumphrey", "herriot"]},
-    "The Thief's Story": {"start_page": 8, "keywords": ["thief's story", "hari singh", "anil"]},
-    "The Midnight Visitor": {"start_page": 14, "keywords": ["midnight visitor", "ausable", "max", "fowler"]},
-    "A Question of Trust": {"start_page": 20, "keywords": ["question of trust", "horace danby", "safe"]},
-    "Footprints Without Feet": {"start_page": 26, "keywords": ["footprints without feet", "griffin", "invisible", "scientist"]},
-    "The Making of a Scientist": {"start_page": 32, "keywords": ["making of a scientist", "ebright", "butterflies"]},
-    "The Necklace": {"start_page": 39, "keywords": ["necklace", "matilda", "loisel", "mme forestier"]},
-    "The Hack Driver": {"start_page": 47, "keywords": ["hack driver", "lutkins", "oliver"]},
-    "Bholi": {"start_page": 54, "keywords": ["bholi", "sulekha", "bishamber"]},
-    "The Book That Saved the Earth": {"start_page": 63, "keywords": ["book that saved", "mars", "think-tank", "mother goose"]},
-}
-
-
-def extract_chapter_from_pdf(pdf_path, chapter_name, page_hints):
-    """Extract specific chapter content from a PDF"""
-    if not PDF_SUPPORT:
-        return ""
-    
-    if not os.path.exists(pdf_path):
-        print(f"PDF not found: {pdf_path}")
-        return ""
-    
+# Load pre-extracted content if available
+EXTRACTED_CONTENT = {}
+if os.path.exists(EXTRACTED_CONTENT_FILE):
     try:
-        doc = fitz.open(pdf_path)
-        chapter_text = []
-        
-        # Get hints for this chapter
-        hints = page_hints.get(chapter_name, {"start_page": 0, "keywords": [chapter_name.lower()]})
-        keywords = hints.get("keywords", [chapter_name.lower()])
-        start_page = hints.get("start_page", 0)
-        
-        # Search for chapter content
-        found_chapter = False
-        pages_collected = 0
-        max_pages = 15  # Limit to prevent too much content
-        
-        for page_num in range(max(0, start_page - 2), min(len(doc), start_page + 25)):
-            page = doc[page_num]
-            text = page.get_text()
-            text_lower = text.lower()
-            
-            # Check if this page contains chapter content
-            if not found_chapter:
-                for kw in keywords:
-                    if kw in text_lower:
-                        found_chapter = True
-                        break
-            
-            if found_chapter:
-                chapter_text.append(text)
-                pages_collected += 1
-                
-                # Stop if we hit another chapter (look for chapter headers)
-                if pages_collected > 3:
-                    # Check for next chapter indicators
-                    if any(marker in text_lower for marker in ["chapter", "lesson"]) and \
-                       not any(kw in text_lower for kw in keywords):
-                        break
-                
-                if pages_collected >= max_pages:
-                    break
-        
-        doc.close()
-        
-        full_text = "\n".join(chapter_text)
-        # Limit text length to avoid token limits
-        if len(full_text) > 15000:
-            full_text = full_text[:15000] + "...[truncated]"
-        
-        return full_text
-        
+        with open(EXTRACTED_CONTENT_FILE, 'r', encoding='utf-8') as f:
+            EXTRACTED_CONTENT = json.load(f)
+        print(f"✅ Loaded pre-extracted content for {len(EXTRACTED_CONTENT)} chapters")
     except Exception as e:
-        print(f"Error extracting from PDF: {e}")
-        return ""
-
-
-def extract_pyq_literature_questions(chapter_name):
-    """Extract literature-related questions from PYQs for a specific chapter"""
-    if not PDF_SUPPORT:
-        return ""
-    
-    all_questions = []
-    chapter_keywords = chapter_name.lower().split()
-    # Add character names and key terms as keywords
-    additional_keywords = {
-        "A Letter to God": ["lencho", "postmaster", "god", "hailstones", "locusts"],
-        "Nelson Mandela: Long Walk to Freedom": ["mandela", "apartheid", "freedom", "transitory", "inauguration"],
-        "Two Stories about Flying": ["seagull", "aeroplane", "pilot", "young seagull"],
-        "From the Diary of Anne Frank": ["anne", "kitty", "mr keesing", "diary"],
-        "Glimpses of India": ["coorg", "baker", "tea", "goa", "assam"],
-        "Mijbil the Otter": ["maxwell", "mijbil", "otter", "basra", "tigris"],
-        "Madam Rides the Bus": ["valli", "bus", "conductor", "cow"],
-        "The Sermon at Benares": ["buddha", "kisa gotami", "mustard seed", "benares"],
-        "The Proposal": ["lomov", "natalya", "chubukov", "oxen meadows"],
-        "Dust of Snow & Fire and Ice": ["frost", "crow", "hemlock", "fire", "ice", "dust of snow"],
-        "A Tiger in the Zoo": ["tiger", "zoo", "cage", "stalks", "velvet"],
-        "How to Tell Wild Animals & The Ball Poem": ["wild animals", "ball poem", "lion", "tiger", "leopard"],
-        "Amanda!": ["amanda", "silence", "orphan", "mermaid"],
-        "Animals & The Trees": ["animals", "whitman", "trees", "adrienne"],
-        "Fog & The Tale of Custard the Dragon": ["fog", "custard", "dragon", "belinda", "sandburg"],
-        "For Anne Gregory": ["anne gregory", "yeats", "yellow hair", "ramparts"],
-        "A Triumph of Surgery": ["tricki", "herriot", "pumphrey", "surgery"],
-        "The Thief's Story": ["hari singh", "anil", "thief"],
-        "The Midnight Visitor": ["ausable", "max", "fowler", "balcony"],
-        "A Question of Trust": ["horace danby", "safe", "robbery"],
-        "Footprints Without Feet": ["griffin", "invisible", "scientist", "iping"],
-        "The Making of a Scientist": ["ebright", "butterflies", "scientist"],
-        "The Necklace": ["matilda", "loisel", "forestier", "necklace"],
-        "The Hack Driver": ["lutkins", "oliver", "hack driver"],
-        "Bholi": ["bholi", "sulekha", "bishamber", "ramlal"],
-        "The Book That Saved the Earth": ["think-tank", "mars", "mother goose"],
-    }
-    
-    # Get keywords for this chapter
-    extra_keywords = additional_keywords.get(chapter_name, [])
-    all_keywords = chapter_keywords + extra_keywords
-    
-    for pyq_dir in PYQ_DIRS:
-        if not os.path.exists(pyq_dir):
-            continue
-            
-        for filename in os.listdir(pyq_dir):
-            if not filename.endswith('.pdf'):
-                continue
-                
-            pdf_path = os.path.join(pyq_dir, filename)
-            try:
-                doc = fitz.open(pdf_path)
-                relevant_sections = []
-                
-                for page_num in range(len(doc)):
-                    page = doc[page_num]
-                    text = page.get_text()
-                    text_lower = text.lower()
-                    
-                    # Check if this page has literature section
-                    has_literature = any(marker in text_lower for marker in 
-                                        ["literature", "first flight", "footprints", "prose", "poetry", 
-                                         "extract", "passage", "read the following"])
-                    
-                    # Check if it mentions our chapter
-                    has_chapter_ref = any(kw in text_lower for kw in all_keywords)
-                    
-                    if has_literature and has_chapter_ref:
-                        relevant_sections.append(text)
-                
-                doc.close()
-                
-                if relevant_sections:
-                    all_questions.append(f"\n--- From PYQ: {filename} ---\n" + "\n".join(relevant_sections[:3]))
-                    
-            except Exception as e:
-                print(f"Error reading PYQ {filename}: {e}")
-                continue
-    
-    combined = "\n".join(all_questions)
-    # Limit length
-    if len(combined) > 10000:
-        combined = combined[:10000] + "...[truncated]"
-    
-    return combined
+        print(f"⚠️ Could not load extracted content: {e}")
+else:
+    print("⚠️ No pre-extracted content found. Run 'python extract_content.py' locally first.")
 
 
 def get_chapter_context(chapter_id):
-    """Get full context for a chapter including book content and PYQs"""
-    chapter = get_chapter_info(chapter_id)
-    if not chapter:
-        return "", ""
-    
-    chapter_name = chapter["name"]
-    book_name = chapter["book"]
-    
-    # Extract book content
-    if book_name == "First Flight":
-        book_content = extract_chapter_from_pdf(FIRST_FLIGHT_PDF, chapter_name, FIRST_FLIGHT_PAGE_HINTS)
-    else:
-        book_content = extract_chapter_from_pdf(FOOTPRINTS_PDF, chapter_name, FOOTPRINTS_PAGE_HINTS)
-    
-    # Extract PYQ questions
-    pyq_content = extract_pyq_literature_questions(chapter_name)
-    
-    return book_content, pyq_content
+    """Get chapter context from pre-extracted JSON content"""
+    if chapter_id in EXTRACTED_CONTENT:
+        content = EXTRACTED_CONTENT[chapter_id]
+        return content.get("book_content", ""), content.get("pyq_content", "")
+    return "", ""
 
 # Chapter data for First Flight
 FIRST_FLIGHT_CHAPTERS = {
