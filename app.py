@@ -14,9 +14,7 @@ import secrets
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
-# Configure Gemini API
-GEMINI_API_KEY = "AIzaSyDnUFFcfmnLcEYBPdSbfxC_4B-8Cs2KT5c"
-genai.configure(api_key=GEMINI_API_KEY)
+# Gemini API will be configured with user-provided key
 
 # Base directory for content
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -102,8 +100,12 @@ def get_chapter_info(chapter_id):
             return {**ch, "book": "Footprints Without Feet"}
     return None
 
-def generate_quiz(chapter_id, num_questions=15):
+def generate_quiz(chapter_id, api_key, num_questions=15):
     """Generate MCQ quiz using Gemini API with actual PDF content"""
+    # Configure Gemini API with user-provided key
+    if not api_key:
+        return None
+    genai.configure(api_key=api_key)
     chapter = get_chapter_info(chapter_id)
     if not chapter:
         return None
@@ -387,6 +389,88 @@ HTML_TEMPLATE = '''
             color: var(--text-secondary);
             font-size: 1.1rem;
             font-weight: 500;
+        }
+        
+        /* API Key Input */
+        .api-key-section {
+            margin-top: 24px;
+            padding: 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .api-key-label {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .api-key-input-wrapper {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .api-key-input {
+            flex: 1;
+            padding: 12px 16px;
+            background: var(--glass);
+            border: 2px solid var(--border);
+            border-radius: 10px;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+            font-family: inherit;
+            transition: all 0.3s ease;
+        }
+        
+        .api-key-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.2);
+        }
+        
+        .api-key-input::placeholder {
+            color: var(--text-secondary);
+            opacity: 0.6;
+        }
+        
+        .api-key-status {
+            margin-top: 10px;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .api-key-status.valid {
+            color: var(--success);
+        }
+        
+        .api-key-status.invalid {
+            color: var(--error);
+        }
+        
+        .api-key-status.pending {
+            color: var(--warning);
+        }
+        
+        .api-key-link {
+            color: var(--accent-primary);
+            text-decoration: none;
+            font-size: 0.85rem;
+            margin-top: 8px;
+            display: inline-block;
+        }
+        
+        .api-key-link:hover {
+            text-decoration: underline;
         }
         
         /* Section titles */
@@ -1014,6 +1098,28 @@ HTML_TEMPLATE = '''
         <header>
             <h1 class="logo">📚 Literature Quiz</h1>
             <p class="tagline">Class 10 NCERT English Revision • AI-Powered MCQs</p>
+            
+            <!-- API Key Input Section -->
+            <div class="api-key-section">
+                <div class="api-key-label">
+                    🔑 Enter your Gemini API Key
+                </div>
+                <div class="api-key-input-wrapper">
+                    <input type="password" 
+                           id="apiKeyInput" 
+                           class="api-key-input" 
+                           placeholder="AIza... (your Gemini API key)"
+                           autocomplete="off">
+                </div>
+                <div class="api-key-status pending" id="apiKeyStatus">
+                    ⚠️ API key required to generate quizzes
+                </div>
+                <a href="https://aistudio.google.com/app/apikey" 
+                   target="_blank" 
+                   class="api-key-link">
+                    📋 Get your free API key from Google AI Studio →
+                </a>
+            </div>
         </header>
         
         <!-- Home Screen -->
@@ -1206,17 +1312,42 @@ HTML_TEMPLATE = '''
         }
         
         async function startQuiz(chapterId, chapterName) {
+            // Get and validate API key
+            const apiKeyInput = document.getElementById('apiKeyInput');
+            const apiKey = apiKeyInput.value.trim();
+            const apiKeyStatus = document.getElementById('apiKeyStatus');
+            
+            if (!apiKey) {
+                apiKeyStatus.className = 'api-key-status invalid';
+                apiKeyStatus.innerHTML = '❌ Please enter your Gemini API key first';
+                apiKeyInput.focus();
+                apiKeyInput.style.borderColor = 'var(--error)';
+                setTimeout(() => {
+                    apiKeyInput.style.borderColor = '';
+                }, 2000);
+                return;
+            }
+            
+            if (!apiKey.startsWith('AIza')) {
+                apiKeyStatus.className = 'api-key-status invalid';
+                apiKeyStatus.innerHTML = '❌ Invalid API key format (should start with "AIza")';
+                apiKeyInput.focus();
+                return;
+            }
+            
             currentChapterId = chapterId;
             currentChapterName = chapterName;
             
             // Show loading
             document.getElementById('loadingOverlay').classList.add('show');
+            apiKeyStatus.className = 'api-key-status pending';
+            apiKeyStatus.innerHTML = '⏳ Validating API key and generating quiz...';
             
             try {
                 const response = await fetch('/generate-quiz', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chapter_id: chapterId })
+                    body: JSON.stringify({ chapter_id: chapterId, api_key: apiKey })
                 });
                 
                 const data = await response.json();
@@ -1452,18 +1583,22 @@ def generate_quiz_api():
     """API endpoint to generate quiz for a chapter"""
     data = request.json
     chapter_id = data.get('chapter_id')
+    api_key = data.get('api_key')
     
     if not chapter_id:
         return jsonify({'success': False, 'error': 'No chapter ID provided'})
     
-    quiz = generate_quiz(chapter_id)
+    if not api_key:
+        return jsonify({'success': False, 'error': 'No API key provided'})
+    
+    quiz = generate_quiz(chapter_id, api_key)
     
     if quiz:
         return jsonify({'success': True, 'quiz': quiz})
     else:
-        return jsonify({'success': False, 'error': 'Failed to generate quiz'})
+        return jsonify({'success': False, 'error': 'Failed to generate quiz. Check your API key or quota.'})
 
 if __name__ == '__main__':
     print("🚀 Starting English Literature Quiz App...")
     print("📚 Open http://localhost:5000 in your browser")
-    app.run(debug=True, port=5000)
+    app.run(host="0.0.0.0", debug=True, port=5000)
